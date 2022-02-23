@@ -1,0 +1,47 @@
+image: ubi8-go-jsonnet:latest
+
+stages:
+  - Deploy
+  - Cleanup
+
+before_script:
+  - export PATH=$PATH:/opt/app-root/src/go/bin
+  - export COMMIT_BEFORE_SHA="$(git rev-parse HEAD~1)"
+  - git checkout "${CI_COMMIT_BRANCH}"
+  - go run git-diff.go
+  - cat git-diff
+
+Deploy dashboards to grafana:
+  stage: Deploy
+  script:
+    - go run build.go --deploy --project "${CI_COMMIT_BRANCH}"
+  
+  # Grafana deployment job will only run on push to a non master branch
+  # Branch name must meet repository standard.
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: never
+    - if: $CI_PIPELINE_SOURCE =~ "push"
+      when: always
+    - if: '$CI_COMMIT_BRANCH =~ /^project|^feature|^bugfix/'
+      when: always
+
+Cleanup short lived dashboards:
+    stage: Cleanup
+    script:
+      # Retrieve branch that was merged from CI_COMMIT_MESSAGE
+      # TODO: This won't be reliable if people use non standard merge commit messages.
+      - branch=$(echo ${CI_COMMIT_MESSAGE} | grep -oP '(?<=branch\s.).+(?=.\sinto)' | sed 's|/||' | cut -c1-39)
+      - echo "Merge source is ${branch}"
+
+      # If previous branch was short lived delete the relevant directory from dev grafana
+      - |
+        if [[ "${branch}" != "master"* ]] && [[ "${branch}" != "project"* ]]; then 
+          echo "Cleaning up short lived grafana dashboard..."
+          curl -X DELETE "https://${GRAFANA_USER}:${GRAFANA_PASSWORD}@${GRAFANA_URL}/grafana/api/folders/${branch}" 
+        else
+          echo "No short lived branches to clean up."
+        fi
+    rules:
+      - if: '$CI_COMMIT_BRANCH =~ /^project/ || $CI_COMMIT_BRANCH =~ /^master$/'
+        when: always
